@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>UX YouTube • Private Owner Admin Dashboard</title>
+  <style>
+    :root {
+      --bg: #0c0e14;
+      --surface: #151924;
+      --border: #262c3d;
+      --accent: #ff2d55;
+      --text: #f3f5fa;
+      --muted: #98a2b8;
+      --ok: #22c55e;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
+    body { margin: 0; background: var(--bg); color: var(--text); }
+    header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); background: var(--surface); }
+    main { max-width: 1120px; margin: 0 auto; padding: 20px; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 18px; margin-bottom: 16px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .stat-val { font-size: 28px; font-weight: 800; color: var(--accent); }
+    .stat-lbl { font-size: 12px; color: var(--muted); }
+    input, button { padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border); background: #0f131c; color: var(--text); font-size: 14px; }
+    input { width: 100%; margin-bottom: 10px; }
+    button { cursor: pointer; background: var(--accent); border-color: var(--accent); font-weight: 600; }
+    button.secondary { background: transparent; border-color: var(--border); color: var(--text); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 600; }
+    .table-wrap { overflow-x: auto; }
+    .pill { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: #23293a; }
+    .pill.blocked { background: rgba(239, 68, 68, 0.2); color: var(--danger); }
+    .pill.active { background: rgba(34, 197, 94, 0.2); color: var(--ok); }
+    .hidden { display: none; }
+    .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .muted { color: var(--muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <strong>UX YouTube</strong> <span class="muted">• Private Owner Console (Sajjad Sordar)</span>
+    </div>
+    <div class="row">
+      <button id="refreshBtn" class="secondary hidden" type="button">Refresh Data</button>
+      <button id="lockBtn" class="secondary hidden" type="button">Lock Session</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="authCard" class="card" style="max-width: 480px; margin: 40px auto;">
+      <h2 style="margin-top:0;">Private Owner Verification</h2>
+      <p class="muted">Enter your verified Firebase Owner ID Token and Personal Owner Secret Code. Credentials remain strictly in memory and are never saved to browser storage.</p>
+      <input id="idTokenInput" type="password" placeholder="Owner Firebase ID Token" autocomplete="off" />
+      <input id="ownerCodeInput" type="password" placeholder="Personal Owner Secret Code" autocomplete="off" />
+      <button id="verifyBtn" type="button" style="width:100%;">Unlock Private Console</button>
+      <p id="authError" class="muted" style="color: var(--danger);"></p>
+    </section>
+
+    <section id="dashboardView" class="hidden">
+      <div id="statsGrid" class="grid"></div>
+
+      <div class="card">
+        <div class="row" style="justify-content: space-between; margin-bottom: 12px;">
+          <h3 style="margin:0;">Registered Users &amp; Activity</h3>
+          <input id="userSearch" type="search" placeholder="Filter by name, email, UID..." style="max-width: 280px; margin: 0;" />
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>AI Req</th>
+                <th>Projects</th>
+                <th>Last Active</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="usersBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0;">Recent API Error Logs</h3>
+        <div id="apiLogsBox" class="muted">Loading...</div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0;">Owner Security Audit Logs</h3>
+        <div id="auditLogsBox" class="muted">Loading...</div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // Security: Tokens live strictly in JS closure memory — never localStorage/sessionStorage.
+    let memIdToken = '';
+    let memOwnerSession = '';
+    let cachedUsers = [];
+
+    const authCard = document.getElementById('authCard');
+    const dashboardView = document.getElementById('dashboardView');
+    const authError = document.getElementById('authError');
+    const refreshBtn = document.getElementById('refreshBtn');
+    const lockBtn = document.getElementById('lockBtn');
+
+    function fmtTime(ms) {
+      if (!ms) return '—';
+      return new Date(ms).toLocaleString();
+    }
+
+    function clearEl(el) {
+      while (el.firstChild) el.removeChild(el.firstChild);
+    }
+
+    function renderStats(summary) {
+      const grid = document.getElementById('statsGrid');
+      clearEl(grid);
+      const items = [
+        ['Total Users', summary.totalUsers],
+        ['Active Today', summary.activeToday],
+        ['Active This Week', summary.activeWeek],
+        ['Active This Month', summary.activeMonth],
+        ['Blocked Users', summary.blockedUsers],
+        ['Total AI Requests', summary.totalAiRequests],
+        ['Total Projects', summary.totalProjects],
+        ['API Errors', summary.totalErrors]
+      ];
+      items.forEach(([label, val]) => {
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.style.marginBottom = '0';
+        const v = document.createElement('div');
+        v.className = 'stat-val';
+        v.textContent = String(val ?? 0);
+        const l = document.createElement('div');
+        l.className = 'stat-lbl';
+        l.textContent = label;
+        card.appendChild(v);
+        card.appendChild(l);
+        grid.appendChild(card);
+      });
+    }
+
+    function renderUsers(filterText = '') {
+      const tbody = document.getElementById('usersBody');
+      clearEl(tbody);
+      const q = filterText.trim().toLowerCase();
+      const rows = cachedUsers.filter((u) =>
+        !q ||
+        (u.displayName || '').toLowerCase().includes(q) ||
+        (u.email || '').toLowerCase().includes(q) ||
+        (u.userId || '').toLowerCase().includes(q)
+      );
+
+      rows.forEach((u) => {
+        const tr = document.createElement('tr');
+        const tdUser = document.createElement('td');
+        const nameStrong = document.createElement('strong');
+        nameStrong.textContent = u.displayName || 'Creator';
+        const emailDiv = document.createElement('div');
+        emailDiv.className = 'muted';
+        emailDiv.textContent = u.email || u.userId;
+        tdUser.appendChild(nameStrong);
+        tdUser.appendChild(emailDiv);
+
+        const tdRole = document.createElement('td');
+        const rolePill = document.createElement('span');
+        rolePill.className = 'pill';
+        rolePill.textContent = u.role || 'USER';
+        tdRole.appendChild(rolePill);
+
+        const tdStatus = document.createElement('td');
+        const stPill = document.createElement('span');
+        const blocked = u.accountStatus === 'BLOCKED';
+        stPill.className = 'pill ' + (blocked ? 'blocked' : 'active');
+        stPill.textContent = u.accountStatus || 'ACTIVE';
+        tdStatus.appendChild(stPill);
+
+        const tdAi = document.createElement('td');
+        tdAi.textContent = String(u.aiRequestCount || 0);
+
+        const tdProj = document.createElement('td');
+        tdProj.textContent = String(u.projectCreateCount || 0);
+
+        const tdActive = document.createElement('td');
+        tdActive.textContent = fmtTime(u.lastActiveMillis);
+
+        const tdAct = document.createElement('td');
+        if (u.role !== 'OWNER') {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'secondary';
+          btn.textContent = blocked ? 'Unblock' : 'Block';
+          btn.addEventListener('click', () => updateUser(u.userId, { accountStatus: blocked ? 'ACTIVE' : 'BLOCKED' }));
+          tdAct.appendChild(btn);
+        }
+
+        [tdUser, tdRole, tdStatus, tdAi, tdProj, tdActive, tdAct].forEach((td) => tr.appendChild(td));
+        tbody.appendChild(tr);
+      });
+    }
+
+    function renderLogList(containerId, items, formatter) {
+      const box = document.getElementById(containerId);
+      clearEl(box);
+      if (!items.length) {
+        box.textContent = 'No records yet.';
+        return;
+      }
+      items.slice(0, 20).forEach((item) => {
+        const p = document.createElement('div');
+        p.style.padding = '8px 0';
+        p.style.borderBottom = '1px solid var(--border)';
+        p.textContent = formatter(item);
+        box.appendChild(p);
+      });
+    }
+
+    async function loadDashboard() {
+      const resp = await fetch('/api/admin/overview', {
+        headers: {
+          'Authorization': 'Bearer ' + memIdToken,
+          'X-Owner-Session': memOwnerSession
+        }
+      });
+      if (!resp.ok) {
+        lockSession();
+        return;
+      }
+      const data = await resp.json();
+      cachedUsers = data.users || [];
+      renderStats(data.summary || {});
+      renderUsers(document.getElementById('userSearch').value);
+      renderLogList('apiLogsBox', data.apiLogs || [], (l) =>
+        `[${fmtTime(l.timestampMillis)}] ${l.endpoint} — ${l.errorMessage}`
+      );
+      renderLogList('auditLogsBox', data.auditLogs || [], (a) =>
+        `[${fmtTime(a.timestampMillis)}] ${a.action} — ${a.detail}`
+      );
+    }
+
+    async function updateUser(uid, body) {
+      await fetch('/api/admin/users/' + encodeURIComponent(uid) + '/status', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + memIdToken,
+          'X-Owner-Session': memOwnerSession
+        },
+        body: JSON.stringify(body)
+      });
+      await loadDashboard();
+    }
+
+    function lockSession() {
+      memIdToken = '';
+      memOwnerSession = '';
+      cachedUsers = [];
+      dashboardView.classList.add('hidden');
+      refreshBtn.classList.add('hidden');
+      lockBtn.classList.add('hidden');
+      authCard.classList.remove('hidden');
+    }
+
+    document.getElementById('verifyBtn').addEventListener('click', async () => {
+      authError.textContent = '';
+      const token = document.getElementById('idTokenInput').value.trim();
+      const code = document.getElementById('ownerCodeInput').value.trim();
+      if (!token || !code) {
+        authError.textContent = 'Both ID Token and Owner Secret Code are required.';
+        return;
+      }
+      try {
+        const resp = await fetch('/api/owner/verify', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + token
+          },
+          body: JSON.stringify({ ownerCode: code, deviceId: 'web-admin', deviceLabel: navigator.userAgent.slice(0, 80) })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.verified) {
+          authError.textContent = data.error || 'Verification failed.';
+          return;
+        }
+        memIdToken = token;
+        memOwnerSession = data.ownerSessionToken;
+        document.getElementById('idTokenInput').value = '';
+        document.getElementById('ownerCodeInput').value = '';
+        authCard.classList.add('hidden');
+        dashboardView.classList.remove('hidden');
+        refreshBtn.classList.remove('hidden');
+        lockBtn.classList.remove('hidden');
+        await loadDashboard();
+      } catch (_) {
+        authError.textContent = 'Unable to reach backend server.';
+      }
+    });
+
+    document.getElementById('userSearch').addEventListener('input', (e) => renderUsers(e.target.value));
+    refreshBtn.addEventListener('click', loadDashboard);
+    lockBtn.addEventListener('click', lockSession);
+  </script>
+</body>
+</html>
